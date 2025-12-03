@@ -339,10 +339,28 @@ class LitellmModel(Model):
                 f"Response format: {response_format}\n"
             )
 
-        reasoning_effort = model_settings.reasoning.effort if model_settings.reasoning else None
+        # Build reasoning_effort - format depends on provider:
+        # - Default: just the effort string (original behavior)
+        # - OpenAI Responses API: dict {"effort": "medium", "summary": "auto"} to get reasoning_content
+        reasoning_effort: dict[str, Any] | str | None = None
+        if model_settings.reasoning:
+            is_openai_responses = "openai" in self.model.lower() and "responses" in self.model.lower()
+            if is_openai_responses:
+                # OpenAI Responses API: pass dict with effort + summary to get reasoning_content
+                reasoning_dict: dict[str, Any] = {}
+                if model_settings.reasoning.effort is not None:
+                    reasoning_dict["effort"] = model_settings.reasoning.effort
+                if model_settings.reasoning.summary is not None:
+                    reasoning_dict["summary"] = model_settings.reasoning.summary
+                if reasoning_dict:
+                    reasoning_effort = reasoning_dict
+            else:
+                # Default (Anthropic, etc): pass just the effort string
+                reasoning_effort = model_settings.reasoning.effort
+
         # Enable developers to pass non-OpenAI compatible reasoning_effort data like "none"
         # Priority order:
-        #  1. model_settings.reasoning.effort
+        #  1. model_settings.reasoning (effort + summary)
         #  2. model_settings.extra_body["reasoning_effort"]
         #  3. model_settings.extra_args["reasoning_effort"]
         if (

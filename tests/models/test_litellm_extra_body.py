@@ -115,6 +115,7 @@ async def test_reasoning_effort_prefers_model_settings(monkeypatch):
         previous_response_id=None,
     )
 
+    # For non-OpenAI models, reasoning_effort is just the effort string
     assert captured["reasoning_effort"] == "low"
     assert settings.extra_body == {"reasoning_effort": "high"}
 
@@ -155,3 +156,48 @@ async def test_extra_body_reasoning_effort_overrides_extra_args(monkeypatch):
     assert captured["reasoning_effort"] == "none"
     assert captured["custom_param"] == "custom"
     assert settings.extra_args == {"reasoning_effort": "low", "custom_param": "custom"}
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
+async def test_reasoning_summary_is_preserved_for_openai_responses(monkeypatch):
+    """
+    Ensure reasoning.summary is preserved when using OpenAI Responses API models.
+
+    This test verifies the fix for GitHub issue:
+    https://github.com/BerriAI/litellm/issues/17428
+
+    For OpenAI Responses API models (openai/responses/*), we pass a dict with
+    both effort and summary to get reasoning_content in the response.
+    For other models (Anthropic, etc), just the effort string is passed.
+    """
+    from openai.types.shared import Reasoning
+
+    captured: dict[str, object] = {}
+
+    async def fake_acompletion(model, messages=None, **kwargs):
+        captured.update(kwargs)
+        msg = Message(role="assistant", content="ok")
+        choice = Choices(index=0, message=msg)
+        return ModelResponse(choices=[choice], usage=Usage(0, 0, 0))
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    settings = ModelSettings(
+        reasoning=Reasoning(effort="medium", summary="auto"),
+    )
+    # Use OpenAI Responses API model to get dict format
+    model = LitellmModel(model="openai/responses/gpt-5")
+
+    await model.get_response(
+        system_instructions=None,
+        input=[],
+        model_settings=settings,
+        tools=[],
+        output_schema=None,
+        handoffs=[],
+        tracing=ModelTracing.DISABLED,
+        previous_response_id=None,
+    )
+
+    # For OpenAI Responses API, both effort and summary should be in the dict
+    assert captured["reasoning_effort"] == {"effort": "medium", "summary": "auto"}
