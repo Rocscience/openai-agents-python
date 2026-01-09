@@ -81,6 +81,7 @@ members = ["agents"]
 
 [tool.uv.sources]
 agents = { workspace = true }
+litellm = { git = "https://github.com/BerriAI/litellm", tag = "v1.80.13-nightly" }
 
 [build-system]
 requires = ["hatchling"]
