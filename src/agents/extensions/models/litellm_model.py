@@ -558,9 +558,27 @@ class LitellmModel(Model):
                         for tool_name in deferred_tools
                     ]
 
+                    # Valid cryptographic signature from Anthropic API examples
+                    # Split into multiple lines to satisfy line length requirements
+                    signature = (
+                        "EqMDCkYIBxgCKkBAFZO8EyZwN1hiLctq0YjZnP0KeKgprr+C0PzgDv4GSggnFwrPQHIZ9A5s+paH"
+                        "+DrQBI1+Vnfq3mLAU5lJnoetEgzUEWx/Cv1022ieAvcaDCXdmg1XkMK0tZ8uCCIwURYAAX0uf2wF"
+                        "dnWt9n8whkhmy8ARQD5G2za4R8X5vTqBq8jpJ15T3c1Jcf3noKMZKooCWFVf0/W5VQqpZTgwDkqy"
+                        "Tau7XraS+u48YlmJGSfyWMPO8snFLMZLGaGmVJgHfEI5PILhOEuX/R2cEeLuC715f51LMVuxTNzl"
+                        "OUV/037JV6P2ten7D66FnWU9JJMMJJov+DjMb728yQFHwHz4roBJ5ePHaaFP6mDwpqYuG/hai6pV"
+                        "v2TAK1IdKUui/oXrYtU+0gxb6UF2kS1bspqDuN++R8JdL7CMSU5l28pQ8TsH1TpVF4jZpsFbp1Du"
+                        "4rQIULFsCFFg+Edf9tPgyKZOq6xcskIjT7oylAPO37/jhdNknDq2S82PaSKtke3ViOigtM5uJfG5"
+                        "21ZscBJQ1K3kwoI/repIdV9PatjOYdsYAQ=="
+                    )
+
                     mock_tool_use_msg = {
                         "role": "assistant",
                         "content": [
+                            {
+                                "type": "thinking",
+                                "thinking": "Let me get the tools...",
+                                "signature": signature,
+                            },
                             # server_tool_use: the assistant's search request.
                             {
                                 "type": "server_tool_use",

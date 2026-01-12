@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import litellm
+from openai.types.shared_params.reasoning import Reasoning
 
 from agents.extensions.models.litellm_model import LitellmModel
 
@@ -228,8 +229,8 @@ async def run_turn(
     print(f"{'=' * 80}")
     print(f"Messages count: {len(messages)}")
     print(f"Tools count: {len(tools)}")
-
-    model_settings = ModelSettings(max_tokens=1024)
+    reasoning = Reasoning(effort="low")
+    model_settings = ModelSettings(max_tokens=10000, reasoning=reasoning)
 
     # Use internal _fetch_response to get raw LiteLLM response with Anthropic cache tokens
     with generation_span(
@@ -251,6 +252,7 @@ async def run_turn(
 
     # Cast to LiteLLM ModelResponse to access usage
     response = cast(litellm.types.utils.ModelResponse, raw_response)
+    print(response)
     usage = response.usage
 
     # Debug: Print all usage attributes to see what's available
@@ -307,7 +309,6 @@ async def main():
         api_key=API_KEY,
         enable_deferred_tools=True,
         enable_cache_control=True,
-        enable_request_logging=True,
         anthropic_beta_headers=anthropic_beta_headers,
     )
     all_stats: list[UsageStats] = []
