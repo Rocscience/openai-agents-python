@@ -88,3 +88,96 @@ agent = Agent(
 ```
 
 With `include_usage=True`, LiteLLM requests report token and request counts through `result.context_wrapper.usage` just like the built-in OpenAI models.
+
+## Anthropic-specific features
+
+When using Anthropic/Claude models with `LitellmModel`, several Anthropic-specific features are available:
+
+!!! warning "Model Support"
+    Advanced Anthropic features (cache control and deferred tools) are only supported on the following models:
+    
+    - `claude-sonnet-4-5-20250929`
+    - `claude-haiku-4-5-20251001`
+    - `claude-opus-4-5-20251101`
+    
+    Older Claude models (e.g., `claude-3-5-sonnet-20241022`) do not support these features. If you attempt to enable these features on an unsupported model, a warning will be logged and the features will be automatically disabled.
+
+### Auto-detection
+
+`LitellmModel` automatically detects Anthropic models (by checking if "anthropic" or "claude" is in the model name) and enables appropriate features for supported models.
+
+### Prompt caching
+
+Anthropic's [prompt caching](https://docs.anthropic.com/claude/docs/prompt-caching) is automatically enabled for supported Anthropic models. You can explicitly control this:
+
+```python
+from agents.extensions.models.litellm_model import LitellmModel
+
+# Auto-detect (enabled for supported Anthropic models)
+model = LitellmModel("claude-haiku-4-5-20251001")
+
+# Explicitly enable (will be disabled with warning if model doesn't support it)
+model = LitellmModel("claude-haiku-4-5-20251001", enable_cache_control=True)
+
+# Explicitly disable
+model = LitellmModel("claude-haiku-4-5-20251001", enable_cache_control=False)
+```
+
+!!! note
+    Prompt caching is now a stable Anthropic feature and does not require beta headers.
+
+### Deferred tool loading
+
+For Anthropic's [advanced tool use features](https://docs.anthropic.com/en/docs/build-with-claude/tool-use), you can enable deferred tool loading on supported models:
+
+```python
+from agents.extensions.models.litellm_model import LitellmModel
+
+# Only works on supported models (Claude 4.5 series)
+model = LitellmModel(
+    "claude-haiku-4-5-20251001",
+    enable_deferred_tools=True,
+)
+```
+
+When enabled:
+- Tools marked with `_is_anthropic=True` and `_is_device_tool=True` attributes will be loaded using Anthropic's deferred mechanism
+- The `anthropic-beta: advanced-tool-use-2025-11-20` header is automatically added
+- If the model doesn't support this feature, it will be disabled with a warning
+
+### Beta headers
+
+For experimental Anthropic features, you can specify custom beta headers:
+
+```python
+from agents.extensions.models.litellm_model import LitellmModel
+
+# Auto-add beta headers based on enabled features
+model = LitellmModel(
+    "claude-3-5-sonnet-20241022",
+    enable_deferred_tools=True,  # Adds "advanced-tool-use-2025-11-20"
+)
+
+# Explicitly set custom beta headers
+model = LitellmModel(
+    "claude-3-5-sonnet-20241022",
+    anthropic_beta_headers=["max-tokens-3-5-sonnet-2022-07-01", "other-feature-2026-01-01"],
+)
+```
+
+Multiple beta features are joined with commas as per the [Anthropic API specification](https://docs.anthropic.com/en/api/beta-headers).
+
+### Debug logging
+
+Enable request logging to debug Anthropic API calls:
+
+```python
+from agents.extensions.models.litellm_model import LitellmModel
+
+model = LitellmModel(
+    "claude-3-5-sonnet-20241022",
+    enable_request_logging=True,
+)
+```
+
+This will save request details to `logs/litellm/request_<timestamp>.json`.

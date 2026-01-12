@@ -4,6 +4,8 @@ import json
 import time
 from collections.abc import AsyncIterator
 from copy import copy
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal, cast, overload
 
 from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
@@ -53,6 +55,30 @@ from ...usage import Usage
 from ...util._json import _to_dump_compatible
 
 
+def add_cache_control_to_last_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add cache_control to the last message in the conversation (mutates in place)."""
+    if not messages:
+        return messages
+
+    last_msg = messages[-1]
+    content = last_msg.get("content")
+
+    # Handle string content.
+    if isinstance(content, str):
+        last_msg["content"] = [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ]
+    # Handle list content.
+    elif isinstance(content, list):
+        # Add cache_control to the last text block.
+        for j in range(len(content) - 1, -1, -1):
+            if isinstance(content[j], dict) and content[j].get("type") == "text":
+                content[j]["cache_control"] = {"type": "ephemeral"}
+                break
+
+    return messages
+
+
 class InternalChatCompletionMessage(ChatCompletionMessage):
     """
     An internal subclass to carry reasoning_content and thinking_blocks without modifying the original model.
@@ -82,10 +108,79 @@ class LitellmModel(Model):
         model: str,
         base_url: str | None = None,
         api_key: str | None = None,
+        enable_cache_control: bool | None = None,
+        enable_deferred_tools: bool = False,
+        enable_request_logging: bool = False,
+        anthropic_beta_headers: list[str] | None = None,
     ):
+        """Initialize LitellmModel with optional Anthropic-specific features.
+
+        Args:
+            model: The model identifier (e.g., "claude-3-5-sonnet-20241022", "gpt-4", etc.)
+            base_url: Optional custom base URL for the API
+            api_key: Optional API key for authentication
+            enable_cache_control: Enable Anthropic prompt caching. If None, auto-detects based on
+                model name (enabled for Anthropic/Claude models). Note: Prompt caching is now
+                a stable feature and does not require beta headers.
+            enable_deferred_tools: Enable Anthropic deferred tool loading feature. Default False.
+                Automatically adds "advanced-tool-use-2025-11-20" to beta headers when enabled.
+            enable_request_logging: Enable debug logging of requests to file. Default False.
+            anthropic_beta_headers: List of Anthropic beta feature names to enable. If None,
+                automatically includes necessary headers based on enabled features. Format:
+                ["feature-name-YYYY-MM-DD", ...]. Example: ["max-tokens-3-5-sonnet-2022-07-01"]
+        """
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
+
+        # Auto-detect Anthropic if not explicitly set.
+        self.enable_cache_control = (
+            enable_cache_control if enable_cache_control is not None else self._is_anthropic_model()
+        )
+        self.enable_deferred_tools = enable_deferred_tools
+        self.enable_request_logging = enable_request_logging
+        self.anthropic_beta_headers = anthropic_beta_headers
+
+        # Validate that advanced features are only enabled for supported models.
+        if self._is_anthropic_model() and (self.enable_cache_control or self.enable_deferred_tools):
+            if not self._supports_anthropic_advanced_features():
+                logger.warning(
+                    f"Model '{self.model}' does not support advanced Anthropic features "
+                    f"(cache control, deferred tools). These features are only supported on: "
+                    f"claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001, "
+                    f"claude-opus-4-5-20251101. Disabling advanced features for this model."
+                )
+                self.enable_cache_control = False
+                self.enable_deferred_tools = False
+
+    def _is_anthropic_model(self) -> bool:
+        """Detect if this is an Anthropic model based on the model name."""
+        return "anthropic" in self.model.lower() or "claude" in self.model.lower()
+
+    def _supports_anthropic_advanced_features(self) -> bool:
+        """
+        Check if the Anthropic model supports advanced features like cache control and
+        deferred tools.
+
+        Only the following models support these features:
+        - claude-sonnet-4-5-20250929
+        - claude-haiku-4-5-20251001
+        - claude-opus-4-5-20251101
+
+        Returns:
+            True if the model supports advanced features, False otherwise.
+        """
+        if not self._is_anthropic_model():
+            return False
+
+        supported_models = [
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-5-20251101",
+        ]
+
+        model_lower = self.model.lower()
+        return any(supported in model_lower for supported in supported_models)
 
     async def get_response(
         self,
@@ -304,7 +399,7 @@ class LitellmModel(Model):
         )
 
         # Fix for interleaved thinking bug: reorder messages to ensure tool_use comes before tool_result  # noqa: E501
-        if "anthropic" in self.model.lower() or "claude" in self.model.lower():
+        if self._is_anthropic_model():
             converted_messages = self._fix_tool_message_ordering(converted_messages)
 
         # Convert Google's extra_content to litellm's provider_specific_fields format
@@ -416,9 +511,111 @@ class LitellmModel(Model):
         # Prevent duplicate reasoning_effort kwargs when it was promoted to a top-level argument.
         extra_kwargs.pop("reasoning_effort", None)
 
+        # ============================================================================
+        # Anthropic-specific features: all in one place for clarity
+        # ============================================================================
+        deferred_tools: list[str] = []
+        mock_tool_use_msg: dict[str, Any] | None = None
+        anthropic_beta_features: list[str] = []
+
+        if self._is_anthropic_model():
+            # Build Anthropic beta headers based on enabled features and user config.
+            if self.anthropic_beta_headers is not None:
+                # User-provided beta headers take precedence.
+                anthropic_beta_features = list(self.anthropic_beta_headers)
+            else:
+                # Auto-add beta headers based on enabled features.
+                if self.enable_deferred_tools:
+                    # Advanced tool use requires beta header.
+                    anthropic_beta_features.append("advanced-tool-use-2025-11-20")
+                # Note: Prompt caching (enable_cache_control) does NOT require a beta header
+                # as it's now a stable feature.
+
+            # Handle deferred tool loading if enabled.
+            if self.enable_deferred_tools:
+                # Identify deferred tools.
+                for tool in tools:
+                    # This will basically default the tool to load deferred,
+                    # so we don't risk breaking cache.
+                    is_anthropic = getattr(tool, "_is_anthropic", True)
+                    is_device_tool = getattr(tool, "_is_device_tool", True)
+                    if is_anthropic and is_device_tool:
+                        deferred_tools.append(tool.name)
+
+                # Mark deferred tools in converted_tools.
+                for tool in converted_tools:
+                    tool_name = (
+                        tool.get("function", {}).get("name")
+                        if "function" in tool
+                        else tool.get("name")
+                    )
+                    if tool_name in deferred_tools:
+                        # Add defer_loading to the function dict for OpenAI format.
+                        if "function" in tool:
+                            tool["function"]["defer_loading"] = True
+                        else:
+                            tool["defer_loading"] = True
+
+                # Build tool reference list and mock tool use message.
+                if deferred_tools:
+                    tool_reference_list = [
+                        {"type": "tool_reference", "tool_name": tool_name}
+                        for tool_name in deferred_tools
+                    ]
+
+                    mock_tool_use_msg = {
+                        "role": "assistant",
+                        "content": [
+                            # server_tool_use: the assistant's search request.
+                            {
+                                "type": "server_tool_use",
+                                "id": "srvtoolu_ph",
+                                "name": "tool_search_tool_regex",
+                                "input": {"query": ".*time.*"},
+                            },
+                            # tool_search_tool_result: the search result.
+                            {
+                                "type": "tool_search_tool_result",
+                                "tool_use_id": "srvtoolu_ph",
+                                "content": {
+                                    "type": "tool_search_tool_search_result",
+                                    "tool_references": tool_reference_list,
+                                },
+                            },
+                        ],
+                    }
+
+            # Apply Anthropic-specific message transformations.
+            final_messages = cast(list[dict[str, Any]], converted_messages)
+
+            # Apply cache control to last message if enabled.
+            if self.enable_cache_control:
+                final_messages = add_cache_control_to_last_message(final_messages)
+
+            # Append mock tool use message if deferred tools are enabled.
+            if mock_tool_use_msg:
+                final_messages = final_messages + [mock_tool_use_msg]
+
+            # Add Anthropic beta headers to extra_headers.
+            if anthropic_beta_features:
+                # Join multiple beta features with commas as per Anthropic API spec.
+                extra_headers = self._merge_headers(model_settings)
+                extra_headers["anthropic-beta"] = ",".join(anthropic_beta_features)
+        else:
+            # Non-Anthropic models: use original messages without modifications.
+            final_messages = converted_messages
+
+        # Log converted messages and tools to a file for debugging.
+        if self.enable_request_logging:
+            self._log_request_to_file(final_messages, converted_tools)
+
+        # Merge headers (will already include Anthropic headers if applicable).
+        if not anthropic_beta_features:
+            extra_headers = self._merge_headers(model_settings)
+
         ret = await litellm.acompletion(
             model=self.model,
-            messages=converted_messages,
+            messages=final_messages,
             tools=converted_tools or None,
             temperature=model_settings.temperature,
             top_p=model_settings.top_p,
@@ -432,7 +629,7 @@ class LitellmModel(Model):
             stream_options=stream_options,
             reasoning_effort=reasoning_effort,
             top_logprobs=model_settings.top_logprobs,
-            extra_headers=self._merge_headers(model_settings),
+            extra_headers=extra_headers,
             api_key=self.api_key,
             base_url=self.base_url,
             **extra_kwargs,
@@ -635,6 +832,39 @@ class LitellmModel(Model):
                 used_indices.add(i)
 
         return fixed_messages
+
+    def _log_request_to_file(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> None:
+        """Log the converted messages and tools to a JSON file for debugging.
+
+        Creates a logs directory if it doesn't exist and writes each request
+        to a timestamped file.
+        """
+        try:
+            # Create logs directory in the current working directory.
+            log_dir = Path("logs/litellm")
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate timestamp-based filename.
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            log_file = log_dir / f"request_{timestamp}.json"
+
+            # Prepare log data.
+            log_data = {
+                "timestamp": datetime.now().isoformat(),
+                "model": self.model,
+                "messages": messages,
+                "tools": tools,
+            }
+
+            # Write to file.
+            with open(log_file, "w", encoding="utf-8") as f:
+                json.dump(log_data, f, indent=2, ensure_ascii=False)
+
+            logger.debug(f"Logged request to {log_file}")
+        except Exception as e:
+            logger.warning(f"Failed to log request to file: {e}")
 
     def _remove_not_given(self, value: Any) -> Any:
         if value is omit or isinstance(value, NotGiven):

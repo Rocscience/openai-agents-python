@@ -1,14 +1,15 @@
 """
-Test for progressive chat history caching with AnthropicLitellmModel using OpenAI Agents SDK formats.
+Test for progressive chat history caching with LitellmModel (Anthropic) using OpenAI Agents SDK formats.
 
 Run this test with:
     uv run python tests_forked/anthropic_sdk_cache_test.py
 
 This test verifies that:
-1. The AnthropicLitellmModel correctly handles SDK message formats (TResponseInputItem)
-2. The AnthropicLitellmModel correctly handles SDK tool formats (FunctionTool)
+1. The LitellmModel correctly handles SDK message formats (TResponseInputItem)
+2. The LitellmModel correctly handles SDK tool formats (FunctionTool)
 3. Progressive caching works correctly as chat history grows
 4. Cache read tokens increase on repeated/extended conversations
+5. Deferred tool loading works with Anthropic models
 
 Message Format Reference (OpenAI Agents SDK):
 - Easy input: {"role": "user/assistant", "content": "text"}
@@ -18,7 +19,7 @@ Message Format Reference (OpenAI Agents SDK):
 Tool Format Reference (OpenAI Agents SDK):
 - FunctionTool with name, description, params_json_schema, on_invoke_tool
 
-Date: 2025-01-09
+Date: 2025-01-12
 """
 
 import asyncio
@@ -27,7 +28,8 @@ from typing import Any, cast
 
 import litellm
 
-from agents.extensions.models.anthropic_litellm_model import AnthropicLitellmModel
+from agents.extensions.models.litellm_model import LitellmModel
+
 from agents.model_settings import ModelSettings
 from agents.models.interface import ModelTracing
 from agents.tool import FunctionTool
@@ -36,6 +38,7 @@ from agents.items import TResponseInputItem
 from agents.tracing import generation_span
 from agents.tracing.span_data import GenerationSpanData
 from agents.tracing.spans import Span
+
 # Configuration
 MODEL_NAME = "claude-haiku-4-5-20251001"
 API_KEY = "YOUR_ANTHROPIC_API_KEY"
@@ -45,6 +48,7 @@ API_KEY = "YOUR_ANTHROPIC_API_KEY"
 # SDK-formatted Tools (FunctionTool objects)
 # ============================================================================
 
+
 async def placeholder_invoke(ctx: ToolContext[Any], args: str) -> str:
     """Placeholder tool invocation - does nothing."""
     return "This is a placeholder tool."
@@ -53,6 +57,7 @@ async def placeholder_invoke(ctx: ToolContext[Any], args: str) -> str:
 async def get_time_invoke(ctx: ToolContext[Any], args: str) -> str:
     """Get time tool invocation."""
     import json
+
     parsed = json.loads(args)
     timezone = parsed.get("timezone", "UTC")
     return f"Current time in {timezone}: 2025-01-09 12:00:00"
@@ -73,8 +78,8 @@ placeholder_tool = FunctionTool(
 )
 
 # Mark as non-deferred (explicitly set to False)
-setattr(placeholder_tool, '_is_anthropic', True)
-setattr(placeholder_tool, '_is_device_tool', False)
+setattr(placeholder_tool, "_is_anthropic", True)
+setattr(placeholder_tool, "_is_device_tool", False)
 
 get_time_tool = FunctionTool(
     name="get_time",
@@ -84,7 +89,7 @@ get_time_tool = FunctionTool(
         "properties": {
             "timezone": {
                 "type": "string",
-                "description": "The IANA time zone name, e.g. America/Los_Angeles"
+                "description": "The IANA time zone name, e.g. America/Los_Angeles",
             }
         },
         "required": ["timezone"],
@@ -95,8 +100,8 @@ get_time_tool = FunctionTool(
 )
 
 # Mark as deferred for Anthropic tool use (to test the mock_tool_use feature)
-setattr(get_time_tool, '_is_anthropic', True)
-setattr(get_time_tool, '_is_device_tool', True)
+setattr(get_time_tool, "_is_anthropic", True)
+setattr(get_time_tool, "_is_device_tool", True)
 
 
 # Tool lists for different turns
@@ -112,6 +117,7 @@ sdk_tools_list_2: list[FunctionTool] = [placeholder_tool, get_time_tool]
 LARGE_SYSTEM_CONTENT = "Here is the full text of a complex legal agreement " * 400
 
 import random
+
 random_int = random.randint(1, 1000000)
 # System instructions (passed separately in SDK)
 # Add a random integer to the system instructions to ensure that the cache is not reused
@@ -130,9 +136,7 @@ user_msg_1: TResponseInputItem = {
 assistant_msg_1: TResponseInputItem = {
     "type": "message",
     "role": "assistant",
-    "content": [
-        {"type": "output_text", "text": "I understand. How can I help you?"}
-    ],
+    "content": [{"type": "output_text", "text": "I understand. How can I help you?"}],
 }
 
 user_msg_2: TResponseInputItem = {
@@ -143,41 +147,36 @@ user_msg_2: TResponseInputItem = {
 assistant_msg_2: TResponseInputItem = {
     "type": "message",
     "role": "assistant",
-    "content": [
-        {"type": "output_text", "text": "Sorry that information is not available."}
-    ],
+    "content": [{"type": "output_text", "text": "Sorry that information is not available."}],
 }
 
 # Long user message for cache testing
 user_msg_long: TResponseInputItem = {
     "type": "message",
     "role": "user",
-    "content": [
-        {"type": "input_text", "text": "ignore this " * 2500}
-    ],
+    "content": [{"type": "input_text", "text": "ignore this " * 2500}],
 }
 
 assistant_msg_3: TResponseInputItem = {
     "type": "message",
     "role": "assistant",
-    "content": [
-        {"type": "output_text", "text": "ok, ignoring the previous message."}
-    ],
+    "content": [{"type": "output_text", "text": "ok, ignoring the previous message."}],
 }
 
 user_msg_long_3: TResponseInputItem = {
     "type": "message",
     "role": "user",
-    "content": [
-        {"type": "input_text", "text": "What's the weather and time in New York?"}
-    ],
+    "content": [{"type": "input_text", "text": "What's the weather and time in New York?"}],
 }
 
 assistant_msg_4: TResponseInputItem = {
     "type": "message",
     "role": "assistant",
     "content": [
-        {"type": "output_text", "text": "I can help you with that. Let me check the time for New York."}
+        {
+            "type": "output_text",
+            "text": "I can help you with that. Let me check the time for New York.",
+        }
     ],
 }
 
@@ -204,9 +203,11 @@ user_msg_5: TResponseInputItem = {
 # Test execution
 # ============================================================================
 
+
 @dataclass
 class UsageStats:
     """Track usage statistics across turns."""
+
     turn: int
     input_tokens: int
     cache_creation_tokens: int
@@ -215,7 +216,7 @@ class UsageStats:
 
 
 async def run_turn(
-    model: AnthropicLitellmModel,
+    model: LitellmModel,
     messages: list[TResponseInputItem],
     tools: list[FunctionTool],
     turn_num: int,
@@ -227,9 +228,9 @@ async def run_turn(
     print(f"{'=' * 80}")
     print(f"Messages count: {len(messages)}")
     print(f"Tools count: {len(tools)}")
-    
+
     model_settings = ModelSettings(max_tokens=1024)
-    
+
     # Use internal _fetch_response to get raw LiteLLM response with Anthropic cache tokens
     with generation_span(
         model=str(model.model),
@@ -247,27 +248,29 @@ async def run_turn(
             tracing=ModelTracing.DISABLED,
             stream=False,
         )
-    
+
     # Cast to LiteLLM ModelResponse to access usage
     response = cast(litellm.types.utils.ModelResponse, raw_response)
     usage = response.usage
-    
+
     # Debug: Print all usage attributes to see what's available
     if turn_num == 1:
         print(f"\n  [DEBUG] Usage object type: {type(usage)}")
-        print(f"  [DEBUG] Usage attributes: {[attr for attr in dir(usage) if not attr.startswith('_')]}")
-        if hasattr(usage, '__dict__'):
+        print(
+            f"  [DEBUG] Usage attributes: {[attr for attr in dir(usage) if not attr.startswith('_')]}"
+        )
+        if hasattr(usage, "__dict__"):
             print(f"  [DEBUG] Usage dict: {usage.__dict__}")
-    
+
     # Extract Anthropic-specific cache tokens directly from usage
     # LiteLLM passes through Anthropic's cache_creation_input_tokens and cache_read_input_tokens
-    cache_creation = getattr(usage, 'cache_creation_input_tokens', 0) or 0
-    cache_read = getattr(usage, 'cache_read_input_tokens', 0) or 0
-    
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+
     # Also try prompt_tokens_details.cached_tokens (OpenAI format)
-    if cache_read == 0 and hasattr(usage, 'prompt_tokens_details'):
-        cache_read = getattr(usage.prompt_tokens_details, 'cached_tokens', 0) or 0
-    
+    if cache_read == 0 and hasattr(usage, "prompt_tokens_details"):
+        cache_read = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+
     stats = UsageStats(
         turn=turn_num,
         input_tokens=usage.prompt_tokens,
@@ -275,77 +278,130 @@ async def run_turn(
         cache_read_tokens=cache_read,
         output_tokens=usage.completion_tokens,
     )
-    
+
     print(f"\nTurn {turn_num} Usage:")
     print(f"  Input tokens: {stats.input_tokens}")
     print(f"  Cache creation tokens: {stats.cache_creation_tokens}")
     print(f"  Cache read tokens: {stats.cache_read_tokens}")
     print(f"  Output tokens: {stats.output_tokens}")
-    
+
     # Print response content
     if response.choices and len(response.choices) > 0:
         message = response.choices[0].message
         if message and message.content:
             print(f"\nResponse: {message.content[:200]}...")
-    
+
     return stats
 
 
 async def main():
     """Run the progressive caching test."""
     print("=" * 80)
-    print("AnthropicLitellmModel Progressive Cache Test (SDK Format)")
+    print("LitellmModel (Anthropic) Progressive Cache Test (SDK Format)")
     print("=" * 80)
-    
-    model = AnthropicLitellmModel(model=MODEL_NAME, api_key=API_KEY)
+
+    anthropic_beta_headers = ["advanced-tool-use-2025-11-20"]
+
+    model = LitellmModel(
+        model=MODEL_NAME,
+        api_key=API_KEY,
+        enable_deferred_tools=True,
+        enable_cache_control=True,
+        enable_request_logging=True,
+        anthropic_beta_headers=anthropic_beta_headers,
+    )
     all_stats: list[UsageStats] = []
-    
+
     # Turn 1: Initial short conversation
     messages_1: list[TResponseInputItem] = [user_msg_1, assistant_msg_1, user_msg_2]
-    stats_1 = await run_turn(model, messages_1, sdk_tools_list_1, 1, "Initial conversation (1 non-deferred tool)")
+    stats_1 = await run_turn(
+        model, messages_1, sdk_tools_list_1, 1, "Initial conversation (1 non-deferred tool)"
+    )
     all_stats.append(stats_1)
-    
+
     # Turn 2: Extend conversation
     messages_2: list[TResponseInputItem] = [
-        user_msg_1, assistant_msg_1, user_msg_2, assistant_msg_2, user_msg_long
+        user_msg_1,
+        assistant_msg_1,
+        user_msg_2,
+        assistant_msg_2,
+        user_msg_long,
     ]
-    stats_2 = await run_turn(model, messages_2, sdk_tools_list_1, 2, "Extend conversation (no tool call yet)")
+    stats_2 = await run_turn(
+        model, messages_2, sdk_tools_list_1, 2, "Extend conversation (no tool call yet)"
+    )
     all_stats.append(stats_2)
-    
+
     # Turn 3: More history, add deferred tool
     messages_3: list[TResponseInputItem] = [
-        user_msg_1, assistant_msg_1, user_msg_2, assistant_msg_2,
-        user_msg_long, assistant_msg_3, user_msg_long_3
+        user_msg_1,
+        assistant_msg_1,
+        user_msg_2,
+        assistant_msg_2,
+        user_msg_long,
+        assistant_msg_3,
+        user_msg_long_3,
     ]
-    stats_3 = await run_turn(model, messages_3, sdk_tools_list_2, 3, "Add deferred tool (get_time) - now 1 non-deferred + 1 deferred")
+    stats_3 = await run_turn(
+        model,
+        messages_3,
+        sdk_tools_list_2,
+        3,
+        "Add deferred tool (get_time) - now 1 non-deferred + 1 deferred",
+    )
     all_stats.append(stats_3)
-    
+
     # Turn 4: Continue growing history
     messages_4: list[TResponseInputItem] = [
-        user_msg_1, assistant_msg_1, user_msg_2, assistant_msg_2,
-        user_msg_long, assistant_msg_3, user_msg_long_3, assistant_msg_4, user_msg_4
+        user_msg_1,
+        assistant_msg_1,
+        user_msg_2,
+        assistant_msg_2,
+        user_msg_long,
+        assistant_msg_3,
+        user_msg_long_3,
+        assistant_msg_4,
+        user_msg_4,
     ]
     stats_4 = await run_turn(model, messages_4, sdk_tools_list_2, 4, "Extend with more messages")
     all_stats.append(stats_4)
-    
+
     # Turn 5: Full conversation
     messages_5: list[TResponseInputItem] = [
-        user_msg_1, assistant_msg_1, user_msg_2, assistant_msg_2,
-        user_msg_long, assistant_msg_3, user_msg_long_3, assistant_msg_4,
-        user_msg_4, assistant_msg_5, user_msg_5
+        user_msg_1,
+        assistant_msg_1,
+        user_msg_2,
+        assistant_msg_2,
+        user_msg_long,
+        assistant_msg_3,
+        user_msg_long_3,
+        assistant_msg_4,
+        user_msg_4,
+        assistant_msg_5,
+        user_msg_5,
     ]
     stats_5 = await run_turn(model, messages_5, sdk_tools_list_2, 5, "Full conversation")
     all_stats.append(stats_5)
-    
+
     # Turn 6: Repeat Turn 5 to show cache reuse
     messages_6: list[TResponseInputItem] = [
-        user_msg_1, assistant_msg_1, user_msg_2, assistant_msg_2,
-        user_msg_long, assistant_msg_3, user_msg_long_3, assistant_msg_4,
-        user_msg_4, assistant_msg_5, user_msg_5
+        user_msg_1,
+        assistant_msg_1,
+        user_msg_2,
+        assistant_msg_2,
+        user_msg_long,
+        assistant_msg_3,
+        user_msg_long_3,
+        assistant_msg_4,
+        user_msg_4,
+        assistant_msg_5,
+        user_msg_5,
     ]
-    stats_6 = await run_turn(model, messages_6, sdk_tools_list_2, 6, "Repeat Turn 5 - demonstrate cache reuse")
+    stats_6 = await run_turn(
+        model, messages_6, sdk_tools_list_2, 6, "Repeat Turn 5 - demonstrate cache reuse"
+    )
     all_stats.append(stats_6)
-    
+
     # Print summary
     print("\n" + "=" * 80)
     print("SUMMARY - Cache Usage Across Turns")
@@ -353,54 +409,76 @@ async def main():
     print(f"{'Turn':<8} {'Input':<12} {'Cache Create':<15} {'Cache Read':<12} {'Output':<10}")
     print("-" * 80)
     for stats in all_stats:
-        print(f"{stats.turn:<8} {stats.input_tokens:<12} {stats.cache_creation_tokens:<15} {stats.cache_read_tokens:<12} {stats.output_tokens:<10}")
+        print(
+            f"{stats.turn:<8} {stats.input_tokens:<12} {stats.cache_creation_tokens:<15} {stats.cache_read_tokens:<12} {stats.output_tokens:<10}"
+        )
     print("=" * 80)
-    
+
     print("\nExpected behavior:")
     print("- Turn 1: Initial request (no cache yet)")
     print("- Turn 2: Cache hit from Turn 1 (cache_read_tokens > 0)")
-    print("- Turn 3: Cache may reset when tools change")
+    print("- Turn 3: Cache PRESERVED when deferred tool added (cache_read_tokens > 0)")
+    print("          This is the key benefit of deferred tools!")
     print("- Turn 4-5: Cache grows incrementally")
     print("- Turn 6: Cache reuse (cache_read_tokens should be high)")
     print("=" * 80)
-    
+
     # Assertions to validate caching behavior
     print("\n" + "=" * 80)
     print("VALIDATION")
     print("=" * 80)
-    
+
     errors: list[str] = []
-    
+
     # Turn 2 should show cache read (Turn 1 was cached)
     if all_stats[1].cache_read_tokens == 0:
-        errors.append(f"WARN: Turn 2 expected cache_read_tokens > 0, got {all_stats[1].cache_read_tokens}")
+        errors.append(
+            f"WARN: Turn 2 expected cache_read_tokens > 0, got {all_stats[1].cache_read_tokens}"
+        )
     else:
         print(f"[OK] Turn 2: Cache read tokens = {all_stats[1].cache_read_tokens} (expected > 0)")
-    
+
+    # Turn 3 should ALSO show cache read (deferred tools should NOT reset cache)
+    if all_stats[2].cache_read_tokens == 0:
+        errors.append(
+            f"ERROR: Turn 3 expected cache_read_tokens > 0, got {all_stats[2].cache_read_tokens}. "
+            f"Deferred tools should NOT reset the cache!"
+        )
+    else:
+        print(
+            f"[OK] Turn 3: Cache read tokens = {all_stats[2].cache_read_tokens} (expected > 0). "
+            f"Deferred tools preserved cache!"
+        )
+
     # Turn 4-6 should show significant cache read (progressive caching)
     for i in [3, 4, 5]:  # Turn 4, 5, 6
         stats = all_stats[i]
         if stats.cache_read_tokens > 0:
-            print(f"[OK] Turn {stats.turn}: Cache read tokens = {stats.cache_read_tokens} (expected > 0)")
+            print(
+                f"[OK] Turn {stats.turn}: Cache read tokens = {stats.cache_read_tokens} (expected > 0)"
+            )
         else:
-            errors.append(f"WARN: Turn {stats.turn} expected cache_read_tokens > 0, got {stats.cache_read_tokens}")
-    
+            errors.append(
+                f"WARN: Turn {stats.turn} expected cache_read_tokens > 0, got {stats.cache_read_tokens}"
+            )
+
     # Turn 6 should have same or more cache_read_tokens as Turn 5 (same messages)
     if all_stats[5].cache_read_tokens >= all_stats[4].cache_read_tokens:
-        print(f"[OK] Turn 6 cache_read ({all_stats[5].cache_read_tokens}) >= Turn 5 ({all_stats[4].cache_read_tokens})")
+        print(
+            f"[OK] Turn 6 cache_read ({all_stats[5].cache_read_tokens}) >= Turn 5 ({all_stats[4].cache_read_tokens})"
+        )
     else:
         errors.append(f"WARN: Turn 6 cache_read should be >= Turn 5")
-    
+
     if errors:
         print("\nWarnings:")
         for err in errors:
             print(f"  - {err}")
     else:
         print("\n[OK] All cache validations passed!")
-    
+
     print("=" * 80)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
