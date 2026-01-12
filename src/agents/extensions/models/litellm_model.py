@@ -530,10 +530,9 @@ class LitellmModel(Model):
             if self.enable_deferred_tools:
                 # Identify deferred tools.
                 for tool in tools:
-                    # This will basically default the tool to load deferred,
-                    # so we don't risk breaking cache.
+                    # Only treat tools explicitly marked as device tools.
                     is_anthropic = getattr(tool, "_is_anthropic", True)
-                    is_device_tool = getattr(tool, "_is_device_tool", True)
+                    is_device_tool = getattr(tool, "_is_device_tool", False)
                     if is_anthropic and is_device_tool:
                         deferred_tools.append(tool.name)
 
@@ -607,7 +606,9 @@ class LitellmModel(Model):
 
             # Append mock tool use message if deferred tools are enabled.
             if mock_tool_use_msg:
-                final_messages = final_messages + [mock_tool_use_msg]
+                # Only append mock tool use message if there are actual deferred tools.
+                if deferred_tools and len(deferred_tools) > 0:
+                    final_messages = final_messages + [mock_tool_use_msg]
 
             # Add Anthropic beta headers to extra_headers.
             if anthropic_beta_features:
