@@ -166,18 +166,3 @@ model = LitellmModel(
 ```
 
 Multiple beta features are joined with commas as per the [Anthropic API specification](https://docs.anthropic.com/en/api/beta-headers).
-
-### Debug logging
-
-Enable request logging to debug Anthropic API calls:
-
-```python
-from agents.extensions.models.litellm_model import LitellmModel
-
-model = LitellmModel(
-    "claude-3-5-sonnet-20241022",
-    enable_request_logging=True,
-)
-```
-
-This will save request details to `logs/litellm/request_<timestamp>.json`.

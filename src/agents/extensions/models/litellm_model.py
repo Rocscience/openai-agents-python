@@ -4,8 +4,6 @@ import json
 import time
 from collections.abc import AsyncIterator
 from copy import copy
-from datetime import datetime
-from pathlib import Path
 from typing import Any, Literal, cast, overload
 
 from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
@@ -110,7 +108,6 @@ class LitellmModel(Model):
         api_key: str | None = None,
         enable_cache_control: bool | None = None,
         enable_deferred_tools: bool = False,
-        enable_request_logging: bool = False,
         anthropic_beta_headers: list[str] | None = None,
     ):
         """Initialize LitellmModel with optional Anthropic-specific features.
@@ -124,7 +121,6 @@ class LitellmModel(Model):
                 a stable feature and does not require beta headers.
             enable_deferred_tools: Enable Anthropic deferred tool loading feature. Default False.
                 Automatically adds "advanced-tool-use-2025-11-20" to beta headers when enabled.
-            enable_request_logging: Enable debug logging of requests to file. Default False.
             anthropic_beta_headers: List of Anthropic beta feature names to enable. If None,
                 automatically includes necessary headers based on enabled features. Format:
                 ["feature-name-YYYY-MM-DD", ...]. Example: ["max-tokens-3-5-sonnet-2022-07-01"]
@@ -138,7 +134,6 @@ class LitellmModel(Model):
             enable_cache_control if enable_cache_control is not None else self._is_anthropic_model()
         )
         self.enable_deferred_tools = enable_deferred_tools
-        self.enable_request_logging = enable_request_logging
         self.anthropic_beta_headers = anthropic_beta_headers
 
         # Validate that advanced features are only enabled for supported models.
@@ -605,10 +600,6 @@ class LitellmModel(Model):
             # Non-Anthropic models: use original messages without modifications.
             final_messages = converted_messages
 
-        # Log converted messages and tools to a file for debugging.
-        if self.enable_request_logging:
-            self._log_request_to_file(final_messages, converted_tools)
-
         # Merge headers (will already include Anthropic headers if applicable).
         if not anthropic_beta_features:
             extra_headers = self._merge_headers(model_settings)
@@ -832,39 +823,6 @@ class LitellmModel(Model):
                 used_indices.add(i)
 
         return fixed_messages
-
-    def _log_request_to_file(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
-    ) -> None:
-        """Log the converted messages and tools to a JSON file for debugging.
-
-        Creates a logs directory if it doesn't exist and writes each request
-        to a timestamped file.
-        """
-        try:
-            # Create logs directory in the current working directory.
-            log_dir = Path("logs/litellm")
-            log_dir.mkdir(parents=True, exist_ok=True)
-
-            # Generate timestamp-based filename.
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            log_file = log_dir / f"request_{timestamp}.json"
-
-            # Prepare log data.
-            log_data = {
-                "timestamp": datetime.now().isoformat(),
-                "model": self.model,
-                "messages": messages,
-                "tools": tools,
-            }
-
-            # Write to file.
-            with open(log_file, "w", encoding="utf-8") as f:
-                json.dump(log_data, f, indent=2, ensure_ascii=False)
-
-            logger.debug(f"Logged request to {log_file}")
-        except Exception as e:
-            logger.warning(f"Failed to log request to file: {e}")
 
     def _remove_not_given(self, value: Any) -> Any:
         if value is omit or isinstance(value, NotGiven):
