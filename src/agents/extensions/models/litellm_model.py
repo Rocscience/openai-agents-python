@@ -559,25 +559,10 @@ class LitellmModel(Model):
 
                     # Valid cryptographic signature from Anthropic API examples
                     # Split into multiple lines to satisfy line length requirements
-                    signature = (
-                        "EqMDCkYIBxgCKkBAFZO8EyZwN1hiLctq0YjZnP0KeKgprr+C0PzgDv4GSggnFwrPQHIZ9A5s+paH"
-                        "+DrQBI1+Vnfq3mLAU5lJnoetEgzUEWx/Cv1022ieAvcaDCXdmg1XkMK0tZ8uCCIwURYAAX0uf2wF"
-                        "dnWt9n8whkhmy8ARQD5G2za4R8X5vTqBq8jpJ15T3c1Jcf3noKMZKooCWFVf0/W5VQqpZTgwDkqy"
-                        "Tau7XraS+u48YlmJGSfyWMPO8snFLMZLGaGmVJgHfEI5PILhOEuX/R2cEeLuC715f51LMVuxTNzl"
-                        "OUV/037JV6P2ten7D66FnWU9JJMMJJov+DjMb728yQFHwHz4roBJ5ePHaaFP6mDwpqYuG/hai6pV"
-                        "v2TAK1IdKUui/oXrYtU+0gxb6UF2kS1bspqDuN++R8JdL7CMSU5l28pQ8TsH1TpVF4jZpsFbp1Du"
-                        "4rQIULFsCFFg+Edf9tPgyKZOq6xcskIjT7oylAPO37/jhdNknDq2S82PaSKtke3ViOigtM5uJfG5"
-                        "21ZscBJQ1K3kwoI/repIdV9PatjOYdsYAQ=="
-                    )
 
                     mock_tool_use_msg = {
                         "role": "assistant",
                         "content": [
-                            {
-                                "type": "thinking",
-                                "thinking": "Let me get the tools...",
-                                "signature": signature,
-                            },
                             # server_tool_use: the assistant's search request.
                             {
                                 "type": "server_tool_use",
@@ -596,7 +581,23 @@ class LitellmModel(Model):
                             },
                         ],
                     }
-
+                    if model_settings.reasoning is not None and model_settings.reasoning.effort is not None:
+                        signature = (
+                            "EqMDCkYIBxgCKkBAFZO8EyZwN1hiLctq0YjZnP0KeKgprr+C0PzgDv4GSggnFwrPQHIZ9A5s+paH"
+                            "+DrQBI1+Vnfq3mLAU5lJnoetEgzUEWx/Cv1022ieAvcaDCXdmg1XkMK0tZ8uCCIwURYAAX0uf2wF"
+                            "dnWt9n8whkhmy8ARQD5G2za4R8X5vTqBq8jpJ15T3c1Jcf3noKMZKooCWFVf0/W5VQqpZTgwDkqy"
+                            "Tau7XraS+u48YlmJGSfyWMPO8snFLMZLGaGmVJgHfEI5PILhOEuX/R2cEeLuC715f51LMVuxTNzl"
+                            "OUV/037JV6P2ten7D66FnWU9JJMMJJov+DjMb728yQFHwHz4roBJ5ePHaaFP6mDwpqYuG/hai6pV"
+                            "v2TAK1IdKUui/oXrYtU+0gxb6UF2kS1bspqDuN++R8JdL7CMSU5l28pQ8TsH1TpVF4jZpsFbp1Du"
+                            "4rQIULFsCFFg+Edf9tPgyKZOq6xcskIjT7oylAPO37/jhdNknDq2S82PaSKtke3ViOigtM5uJfG5"
+                            "21ZscBJQ1K3kwoI/repIdV9PatjOYdsYAQ=="
+                        )
+                        mock_reasoning_msg = {
+                            "type": "thinking",
+                            "thinking": "Let me get the tools...",
+                            "signature": signature,
+                        }
+                        mock_tool_use_msg["content"].insert(0, mock_reasoning_msg)
             # Apply Anthropic-specific message transformations.
             final_messages = cast(list[dict[str, Any]], converted_messages)
 
