@@ -532,7 +532,7 @@ class LitellmModel(Model):
                 for tool in tools:
                     # Only treat tools explicitly marked as device tools.
                     is_anthropic = getattr(tool, "_is_anthropic", True)
-                    is_device_tool = getattr(tool, "_is_device_tool", False)
+                    is_device_tool = getattr(tool, "_device_tool", False)
                     if is_anthropic and is_device_tool:
                         deferred_tools.append(tool.name)
 
