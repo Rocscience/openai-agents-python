@@ -3,7 +3,8 @@ revision = 2
 requires-python = ">=3.9"
 resolution-markers = [
     "python_full_version >= '3.14'",
-    "python_full_version >= '3.11' and python_full_version < '3.14'",
+    "python_full_version >= '3.14'",
+    "python_full_version >= '3.11' and python_full_version < '3.14' and python_full_version < '3.14'",
     "python_full_version == '3.10.*'",
     "python_full_version >= '3.9.2' and python_full_version < '3.10'",
     "python_full_version < '3.9.2'",
@@ -1455,7 +1456,7 @@ wheels = [
 [[package]]
 name = "litellm"
 version = "1.80.13"
-source = { git = "https://github.com/BerriAI/litellm?tag=v1.80.13-nightly#10ec499369782f2bc9623419e44b140832bfdd24" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1472,6 +1473,10 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "tiktoken" },
     { name = "tokenizers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/b4/ef75838159aabee15ad93d65ee0e91d04ba0e310784b7b0d3f490cca270c/litellm-1.80.13.tar.gz", hash = "sha256:61ed22dfad633ada3b97dd8a50d8e8d804da0115105006d2f9d77ba3fb247a0b", size = 13277620, upload-time = "2026-01-09T04:37:08.529Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/90/e8e0ad7f57d3a56c3411b3867e02768f9722b5975a263c8aaaaba6693d91/litellm-1.80.13-py3-none-any.whl", hash = "sha256:43dcdbca010961f17d7a5a6a995a38d1a46101350959b0e8269576cfe913cf0b", size = 11562501, upload-time = "2026-01-09T04:37:05.551Z" },
 ]
 
 [[package]]
@@ -2163,7 +2168,7 @@ wheels = [
 
 [[package]]
 name = "openai-agents"
-version = "0.6.5"
+version = "0.6.6"
 source = { editable = "." }
 dependencies = [
     { name = "griffe" },
@@ -2246,7 +2251,7 @@ requires-dist = [
     { name = "graphviz", marker = "extra == 'viz'", specifier = ">=0.17" },
     { name = "griffe", specifier = ">=1.5.6,<2" },
     { name = "grpcio", marker = "extra == 'dapr'", specifier = ">=1.60.0" },
-    { name = "litellm", marker = "extra == 'litellm'", git = "https://github.com/BerriAI/litellm?tag=v1.80.13-nightly" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.80.10,<2" },
     { name = "mcp", marker = "python_full_version >= '3.10'", specifier = ">=1.11.0,<2" },
     { name = "numpy", marker = "python_full_version >= '3.10' and extra == 'voice'", specifier = ">=2.2.0,<3" },
     { name = "openai", specifier = ">=2.9.0,<3" },

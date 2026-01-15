@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import warnings as warnings_module
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agents import Agent, Runner
 from agents.items import TResponseInputItem
 from agents.memory import (
     OpenAIResponsesCompactionSession,
@@ -17,6 +19,9 @@ from agents.memory.openai_responses_compaction_session import (
     is_openai_model_name,
     select_compaction_candidate_items,
 )
+from tests.fake_model import FakeModel
+from tests.test_responses import get_text_message
+from tests.utils.simple_session import SimpleListSession
 
 
 class TestIsOpenAIModelName:
@@ -253,6 +258,36 @@ class TestOpenAIResponsesCompactionSession:
             await session.run_compaction({"response_id": "resp-123"})
 
         assert warning_model.received_warnings_arg is False
+        mock_client.responses.compact.assert_called_once_with(
+            previous_response_id="resp-123",
+            model="gpt-4.1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_compaction_runs_during_runner_flow(self) -> None:
+        """Ensure Runner triggers compaction when using a compaction-aware session."""
+        underlying = SimpleListSession()
+        compacted = SimpleNamespace(
+            output=[{"type": "compaction", "encrypted_content": "enc"}],
+        )
+        mock_client = MagicMock()
+        mock_client.responses.compact = AsyncMock(return_value=compacted)
+
+        session = OpenAIResponsesCompactionSession(
+            session_id="demo",
+            underlying_session=underlying,
+            client=mock_client,
+            should_trigger_compaction=lambda ctx: True,
+        )
+
+        model = FakeModel(initial_output=[get_text_message("ok")])
+        agent = Agent(name="assistant", model=model)
+
+        await Runner.run(agent, "hello", session=session)
+
+        mock_client.responses.compact.assert_awaited_once()
+        items = await session.get_items()
+        assert any(isinstance(item, dict) and item.get("type") == "compaction" for item in items)
 
 
 class TestTypeGuard:
