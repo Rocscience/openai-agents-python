@@ -749,10 +749,12 @@ class LitellmModel(Model):
                 }
 
                 logger.debug(
-                    f"Thinking block logic: last_user_idx={last_user_idx}, first_assistant_after_user_idx={first_assistant_after_user_idx}"
+                    f"Thinking block logic: last_user_idx={last_user_idx}, "
+                    f"first_assistant_after_user_idx={first_assistant_after_user_idx}"
                 )
 
-                # Insert thinking block into the FIRST assistant message after the last user message.
+                # Insert thinking block into the FIRST assistant message after
+                # the last user message.
                 if first_assistant_after_user_idx != -1:
                     assistant_msg = final_messages[first_assistant_after_user_idx]
                     if isinstance(assistant_msg, dict):
@@ -767,12 +769,12 @@ class LitellmModel(Model):
                             # Check if thinking block already exists.
                             has_thinking = has_thinking_block(content)
                             logger.debug(
-                                f"First assistant message after user has thinking block: {has_thinking}"
+                                f"First assistant msg after user has thinking block: {has_thinking}"
                             )
                             if not has_thinking:
                                 assistant_msg["content"].insert(0, mock_reasoning_msg)
                                 logger.debug(
-                                    "Added thinking block to first assistant message after last user"
+                                    "Added thinking block to first assistant msg after last user"
                                 )
 
             # Add Anthropic beta headers to extra_headers.
