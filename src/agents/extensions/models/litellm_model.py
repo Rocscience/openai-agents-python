@@ -77,6 +77,52 @@ def add_cache_control_to_last_message(messages: list[dict[str, Any]]) -> list[di
     return messages
 
 
+def add_cache_control_to_last_user_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add cache_control to the last user message in the conversation (mutates in place)."""
+    if not messages:
+        return messages
+
+    # Find the last user message.
+    last_user_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], dict) and messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if last_user_idx == -1:
+        return messages
+
+    user_msg = messages[last_user_idx]
+    content = user_msg.get("content")
+
+    # Handle string content.
+    if isinstance(content, str):
+        user_msg["content"] = [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ]
+    # Handle list content.
+    elif isinstance(content, list):
+        # Add cache_control to the last text block.
+        for j in range(len(content) - 1, -1, -1):
+            if isinstance(content[j], dict) and content[j].get("type") == "text":
+                content[j]["cache_control"] = {"type": "ephemeral"}
+                break
+
+    return messages
+
+
+def has_thinking_block(content: list[dict[str, Any]]) -> bool:
+    """Check if a content list already contains a thinking block."""
+    if not isinstance(content, list):
+        return False
+    
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "thinking":
+            return True
+    
+    return False
+
+
 class InternalChatCompletionMessage(ChatCompletionMessage):
     """
     An internal subclass to carry reasoning_content and thinking_blocks without modifying the original model.
@@ -532,7 +578,7 @@ class LitellmModel(Model):
                 for tool in tools:
                     # Only treat tools explicitly marked as device tools.
                     is_anthropic = getattr(tool, "_is_anthropic", True)
-                    is_device_tool = getattr(tool, "_is_device_tool", False)
+                    is_device_tool = getattr(tool, "_device_tool", False)
                     if is_anthropic and is_device_tool:
                         deferred_tools.append(tool.name)
 
@@ -581,35 +627,80 @@ class LitellmModel(Model):
                             },
                         ],
                     }
-                    if model_settings.reasoning is not None and model_settings.reasoning.effort is not None:
-                        signature = (
-                            "EqMDCkYIBxgCKkBAFZO8EyZwN1hiLctq0YjZnP0KeKgprr+C0PzgDv4GSggnFwrPQHIZ9A5s+paH"
-                            "+DrQBI1+Vnfq3mLAU5lJnoetEgzUEWx/Cv1022ieAvcaDCXdmg1XkMK0tZ8uCCIwURYAAX0uf2wF"
-                            "dnWt9n8whkhmy8ARQD5G2za4R8X5vTqBq8jpJ15T3c1Jcf3noKMZKooCWFVf0/W5VQqpZTgwDkqy"
-                            "Tau7XraS+u48YlmJGSfyWMPO8snFLMZLGaGmVJgHfEI5PILhOEuX/R2cEeLuC715f51LMVuxTNzl"
-                            "OUV/037JV6P2ten7D66FnWU9JJMMJJov+DjMb728yQFHwHz4roBJ5ePHaaFP6mDwpqYuG/hai6pV"
-                            "v2TAK1IdKUui/oXrYtU+0gxb6UF2kS1bspqDuN++R8JdL7CMSU5l28pQ8TsH1TpVF4jZpsFbp1Du"
-                            "4rQIULFsCFFg+Edf9tPgyKZOq6xcskIjT7oylAPO37/jhdNknDq2S82PaSKtke3ViOigtM5uJfG5"
-                            "21ZscBJQ1K3kwoI/repIdV9PatjOYdsYAQ=="
-                        )
-                        mock_reasoning_msg = {
-                            "type": "thinking",
-                            "thinking": "Let me get the tools...",
-                            "signature": signature,
-                        }
-                        mock_tool_use_msg["content"].insert(0, mock_reasoning_msg)
             # Apply Anthropic-specific message transformations.
             final_messages = cast(list[dict[str, Any]], converted_messages)
 
-            # Apply cache control to last message if enabled.
+            # Apply cache control to last message and last user message if enabled.
             if self.enable_cache_control:
                 final_messages = add_cache_control_to_last_message(final_messages)
+                final_messages = add_cache_control_to_last_user_message(final_messages)
 
             # Append mock tool use message if deferred tools are enabled.
             if mock_tool_use_msg:
                 # Only append mock tool use message if there are actual deferred tools.
                 if deferred_tools and len(deferred_tools) > 0:
                     final_messages = final_messages + [mock_tool_use_msg]
+
+            # Insert mock thinking block to the FIRST assistant message AFTER the last user message.
+            # This must be done AFTER appending the mock message so it's in final_messages.
+            if (
+                model_settings.reasoning is not None
+                and model_settings.reasoning.effort is not None
+                and deferred_tools
+                and len(deferred_tools) > 0
+            ):
+                # Find the last user message index.
+                last_user_idx = -1
+                for i in range(len(final_messages) - 1, -1, -1):
+                    if isinstance(final_messages[i], dict) and final_messages[i].get("role") == "user":
+                        last_user_idx = i
+                        break
+
+                # Find the FIRST assistant message AFTER the last user message.
+                first_assistant_after_user_idx = -1
+                if last_user_idx != -1:
+                    for i in range(last_user_idx + 1, len(final_messages)):
+                        if isinstance(final_messages[i], dict) and final_messages[i].get("role") == "assistant":
+                            first_assistant_after_user_idx = i
+                            break
+
+                # Create the thinking block signature.
+                signature = (
+                    "EqMDCkYIBxgCKkBAFZO8EyZwN1hiLctq0YjZnP0KeKgprr+C0PzgDv4GSggnFwrPQHIZ9A5s+paH"
+                    "+DrQBI1+Vnfq3mLAU5lJnoetEgzUEWx/Cv1022ieAvcaDCXdmg1XkMK0tZ8uCCIwURYAAX0uf2wF"
+                    "dnWt9n8whkhmy8ARQD5G2za4R8X5vTqBq8jpJ15T3c1Jcf3noKMZKooCWFVf0/W5VQqpZTgwDkqy"
+                    "Tau7XraS+u48YlmJGSfyWMPO8snFLMZLGaGmVJgHfEI5PILhOEuX/R2cEeLuC715f51LMVuxTNzl"
+                    "OUV/037JV6P2ten7D66FnWU9JJMMJJov+DjMb728yQFHwHz4roBJ5ePHaaFP6mDwpqYuG/hai6pV"
+                    "v2TAK1IdKUui/oXrYtU+0gxb6UF2kS1bspqDuN++R8JdL7CMSU5l28pQ8TsH1TpVF4jZpsFbp1Du"
+                    "4rQIULFsCFFg+Edf9tPgyKZOq6xcskIjT7oylAPO37/jhdNknDq2S82PaSKtke3ViOigtM5uJfG5"
+                    "21ZscBJQ1K3kwoI/repIdV9PatjOYdsYAQ=="
+                )
+                mock_reasoning_msg = {
+                    "type": "thinking",
+                    "thinking": "Let me get the tools...",
+                    "signature": signature,
+                }
+
+                logger.debug(f"Thinking block logic: last_user_idx={last_user_idx}, first_assistant_after_user_idx={first_assistant_after_user_idx}")
+
+                # Insert thinking block into the FIRST assistant message after the last user message.
+                if first_assistant_after_user_idx != -1:
+                    assistant_msg = final_messages[first_assistant_after_user_idx]
+                    if isinstance(assistant_msg, dict):
+                        content = assistant_msg.get("content")
+                        
+                        # Convert string content to list format if needed.
+                        if isinstance(content, str):
+                            assistant_msg["content"] = [{"type": "text", "text": content}]
+                            content = assistant_msg["content"]
+                        
+                        if isinstance(content, list):
+                            # Check if thinking block already exists.
+                            has_thinking = has_thinking_block(content)
+                            logger.debug(f"First assistant message after user has thinking block: {has_thinking}")
+                            if not has_thinking:
+                                assistant_msg["content"].insert(0, mock_reasoning_msg)
+                                logger.debug("Added thinking block to first assistant message after last user")
 
             # Add Anthropic beta headers to extra_headers.
             if anthropic_beta_features:
