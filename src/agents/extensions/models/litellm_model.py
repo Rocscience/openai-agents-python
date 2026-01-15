@@ -176,11 +176,11 @@ def has_thinking_block(content: list[dict[str, Any]]) -> bool:
     """Check if a content list already contains a thinking block."""
     if not isinstance(content, list):
         return False
-    
+
     for item in content:
         if isinstance(item, dict) and item.get("type") == "thinking":
             return True
-    
+
     return False
 
 
@@ -713,7 +713,10 @@ class LitellmModel(Model):
                 # Find the last user message index.
                 last_user_idx = -1
                 for i in range(len(final_messages) - 1, -1, -1):
-                    if isinstance(final_messages[i], dict) and final_messages[i].get("role") == "user":
+                    if (
+                        isinstance(final_messages[i], dict)
+                        and final_messages[i].get("role") == "user"
+                    ):
                         last_user_idx = i
                         break
 
@@ -721,7 +724,10 @@ class LitellmModel(Model):
                 first_assistant_after_user_idx = -1
                 if last_user_idx != -1:
                     for i in range(last_user_idx + 1, len(final_messages)):
-                        if isinstance(final_messages[i], dict) and final_messages[i].get("role") == "assistant":
+                        if (
+                            isinstance(final_messages[i], dict)
+                            and final_messages[i].get("role") == "assistant"
+                        ):
                             first_assistant_after_user_idx = i
                             break
 
@@ -742,26 +748,32 @@ class LitellmModel(Model):
                     "signature": signature,
                 }
 
-                logger.debug(f"Thinking block logic: last_user_idx={last_user_idx}, first_assistant_after_user_idx={first_assistant_after_user_idx}")
+                logger.debug(
+                    f"Thinking block logic: last_user_idx={last_user_idx}, first_assistant_after_user_idx={first_assistant_after_user_idx}"
+                )
 
                 # Insert thinking block into the FIRST assistant message after the last user message.
                 if first_assistant_after_user_idx != -1:
                     assistant_msg = final_messages[first_assistant_after_user_idx]
                     if isinstance(assistant_msg, dict):
                         content = assistant_msg.get("content")
-                        
+
                         # Convert string content to list format if needed.
                         if isinstance(content, str):
                             assistant_msg["content"] = [{"type": "text", "text": content}]
                             content = assistant_msg["content"]
-                        
+
                         if isinstance(content, list):
                             # Check if thinking block already exists.
                             has_thinking = has_thinking_block(content)
-                            logger.debug(f"First assistant message after user has thinking block: {has_thinking}")
+                            logger.debug(
+                                f"First assistant message after user has thinking block: {has_thinking}"
+                            )
                             if not has_thinking:
                                 assistant_msg["content"].insert(0, mock_reasoning_msg)
-                                logger.debug("Added thinking block to first assistant message after last user")
+                                logger.debug(
+                                    "Added thinking block to first assistant message after last user"
+                                )
 
             # Add Anthropic beta headers to extra_headers.
             if anthropic_beta_features:
