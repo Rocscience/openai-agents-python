@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import AsyncIterator
 from copy import copy
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal, cast, overload
 
 from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
@@ -33,7 +34,6 @@ from openai.types.chat.chat_completion_message import (
 )
 from openai.types.chat.chat_completion_message_function_tool_call import Function
 from openai.types.responses import Response
-from pydantic import BaseModel
 
 from ... import _debug
 from ...agent_output import AgentOutputSchemaBase
@@ -55,63 +55,23 @@ from ...usage import Usage
 from ...util._json import _to_dump_compatible
 
 
-def _patch_litellm_serializer_warnings() -> None:
-    """Ensure LiteLLM logging uses model_dump(warnings=False) when available."""
-    # Background: LiteLLM emits Pydantic serializer warnings for Message/Choices mismatches.
-    # See: https://github.com/BerriAI/litellm/issues/11759
-    # This patch relies on a private LiteLLM helper; if the name or signature changes,
-    # the wrapper should no-op or fall back to LiteLLM's default behavior. Revisit on upgrade.
-    # Remove this patch once the LiteLLM issue is resolved.
+def normalize_message_content_to_list(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert all string content fields to list format for cache control compatibility (mutates in place).
+    
+    Transforms: "content": "Hello"
+    Into:       "content": [{"type": "text", "text": "Hello"},]
+    
+    This is required for Anthropic prompt caching to work correctly.
+    """
+    if not messages:
+        return messages
 
-    try:
-        from litellm.litellm_core_utils import litellm_logging as _litellm_logging
-    except Exception:
-        return
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = [{"type": "text", "text": content},]
 
-    # Guard against double-patching if this module is imported multiple times.
-    if getattr(_litellm_logging, "_openai_agents_patched_serializer_warnings", False):
-        return
-
-    original = getattr(_litellm_logging, "_extract_response_obj_and_hidden_params", None)
-    if original is None:
-        return
-
-    def _wrapped_extract_response_obj_and_hidden_params(*args, **kwargs):
-        # init_response_obj is LiteLLM's raw response container (often a Pydantic BaseModel).
-        # Accept arbitrary args to stay compatible if LiteLLM changes the signature.
-        init_response_obj = args[0] if args else kwargs.get("init_response_obj")
-        if isinstance(init_response_obj, BaseModel):
-            hidden_params = getattr(init_response_obj, "_hidden_params", None)
-            try:
-                response_obj = init_response_obj.model_dump(warnings=False)
-            except TypeError:
-                response_obj = init_response_obj.model_dump()
-            if args:
-                response_obj_out, original_hidden = original(response_obj, *args[1:], **kwargs)
-            else:
-                updated_kwargs = dict(kwargs)
-                updated_kwargs["init_response_obj"] = response_obj
-                response_obj_out, original_hidden = original(**updated_kwargs)
-            return response_obj_out, hidden_params or original_hidden
-
-        return original(*args, **kwargs)
-
-    setattr(  # noqa: B010
-        _litellm_logging,
-        "_extract_response_obj_and_hidden_params",
-        _wrapped_extract_response_obj_and_hidden_params,
-    )
-    setattr(  # noqa: B010
-        _litellm_logging,
-        "_openai_agents_patched_serializer_warnings",
-        True,
-    )
-
-
-# Set OPENAI_AGENTS_ENABLE_LITELLM_SERIALIZER_PATCH=true to opt in.
-_enable_litellm_patch = os.getenv("OPENAI_AGENTS_ENABLE_LITELLM_SERIALIZER_PATCH", "")
-if _enable_litellm_patch.lower() in ("1", "true"):
-    _patch_litellm_serializer_warnings()
+    return messages
 
 
 def add_cache_control_to_last_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -130,6 +90,35 @@ def add_cache_control_to_last_message(messages: list[dict[str, Any]]) -> list[di
     # Handle list content.
     elif isinstance(content, list):
         # Add cache_control to the last text block.
+        for j in range(len(content) - 1, -1, -1):
+            if isinstance(content[j], dict) and content[j].get("type") == "text":
+                content[j]["cache_control"] = {"type": "ephemeral"}
+                break
+
+    return messages
+
+
+def add_cache_control_to_second_to_last_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add cache_control to the second-to-last message in the conversation (mutates in place).
+    
+    This ensures cache_control is never placed on the final message (which is a mock message).
+    Only called when a mock message was added, so there are always at least 2 messages.
+    """
+    if len(messages) < 2:
+        return messages
+
+    # Always target second-to-last (the message before the mock)
+    target_msg = messages[-2]
+    content = target_msg.get("content")
+
+    # Handle string content.
+    if isinstance(content, str):
+        target_msg["content"] = [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ]
+    # Handle list content.
+    elif isinstance(content, list):
+        # Add cache_control to the last text block in that message.
         for j in range(len(content) - 1, -1, -1):
             if isinstance(content[j], dict) and content[j].get("type") == "text":
                 content[j]["cache_control"] = {"type": "ephemeral"}
@@ -176,11 +165,11 @@ def has_thinking_block(content: list[dict[str, Any]]) -> bool:
     """Check if a content list already contains a thinking block."""
     if not isinstance(content, list):
         return False
-
+    
     for item in content:
         if isinstance(item, dict) and item.get("type") == "thinking":
             return True
-
+    
     return False
 
 
@@ -691,16 +680,15 @@ class LitellmModel(Model):
             # Apply Anthropic-specific message transformations.
             final_messages = cast(list[dict[str, Any]], converted_messages)
 
-            # Apply cache control to last message and last user message if enabled.
-            if self.enable_cache_control:
-                final_messages = add_cache_control_to_last_message(final_messages)
-                final_messages = add_cache_control_to_last_user_message(final_messages)
+            # Track if mock message was added (for cache_control placement later)
+            mock_message_added = False
 
             # Append mock tool use message if deferred tools are enabled.
             if mock_tool_use_msg:
                 # Only append mock tool use message if there are actual deferred tools.
                 if deferred_tools and len(deferred_tools) > 0:
                     final_messages = final_messages + [mock_tool_use_msg]
+                    mock_message_added = True
 
             # Insert mock thinking block to the FIRST assistant message AFTER the last user message.
             # This must be done AFTER appending the mock message so it's in final_messages.
@@ -713,10 +701,7 @@ class LitellmModel(Model):
                 # Find the last user message index.
                 last_user_idx = -1
                 for i in range(len(final_messages) - 1, -1, -1):
-                    if (
-                        isinstance(final_messages[i], dict)
-                        and final_messages[i].get("role") == "user"
-                    ):
+                    if isinstance(final_messages[i], dict) and final_messages[i].get("role") == "user":
                         last_user_idx = i
                         break
 
@@ -724,10 +709,7 @@ class LitellmModel(Model):
                 first_assistant_after_user_idx = -1
                 if last_user_idx != -1:
                     for i in range(last_user_idx + 1, len(final_messages)):
-                        if (
-                            isinstance(final_messages[i], dict)
-                            and final_messages[i].get("role") == "assistant"
-                        ):
+                        if isinstance(final_messages[i], dict) and final_messages[i].get("role") == "assistant":
                             first_assistant_after_user_idx = i
                             break
 
@@ -748,34 +730,39 @@ class LitellmModel(Model):
                     "signature": signature,
                 }
 
-                logger.debug(
-                    f"Thinking block logic: last_user_idx={last_user_idx}, "
-                    f"first_assistant_after_user_idx={first_assistant_after_user_idx}"
-                )
+                logger.debug(f"Thinking block logic: last_user_idx={last_user_idx}, first_assistant_after_user_idx={first_assistant_after_user_idx}")
 
-                # Insert thinking block into the FIRST assistant message after
-                # the last user message.
+                # Insert thinking block into the FIRST assistant message after the last user message.
                 if first_assistant_after_user_idx != -1:
                     assistant_msg = final_messages[first_assistant_after_user_idx]
                     if isinstance(assistant_msg, dict):
                         content = assistant_msg.get("content")
-
+                        
                         # Convert string content to list format if needed.
                         if isinstance(content, str):
                             assistant_msg["content"] = [{"type": "text", "text": content}]
                             content = assistant_msg["content"]
-
+                        
                         if isinstance(content, list):
                             # Check if thinking block already exists.
                             has_thinking = has_thinking_block(content)
-                            logger.debug(
-                                f"First assistant msg after user has thinking block: {has_thinking}"
-                            )
+                            logger.debug(f"First assistant message after user has thinking block: {has_thinking}")
                             if not has_thinking:
                                 assistant_msg["content"].insert(0, mock_reasoning_msg)
-                                logger.debug(
-                                    "Added thinking block to first assistant msg after last user"
-                                )
+                                logger.debug("Added thinking block to first assistant message after last user")
+
+            # Apply cache control AFTER all messages are assembled (including mock messages).
+            # If a mock message was added, place cache_control on second-to-last (before the mock).
+            # If no mock message was added, place cache_control on the last message.
+            if self.enable_cache_control:
+                # First, normalize all string content to list format for cache control compatibility
+                final_messages = normalize_message_content_to_list(final_messages)
+                
+                if mock_message_added:
+                    final_messages = add_cache_control_to_second_to_last_message(final_messages)
+                else:
+                    final_messages = add_cache_control_to_last_message(final_messages)
+                # final_messages = add_cache_control_to_last_user_message(final_messages)
 
             # Add Anthropic beta headers to extra_headers.
             if anthropic_beta_features:
@@ -789,6 +776,14 @@ class LitellmModel(Model):
         # Merge headers (will already include Anthropic headers if applicable).
         if not anthropic_beta_features:
             extra_headers = self._merge_headers(model_settings)
+
+        # Log request to file
+        self._log_request_to_file(
+            messages=final_messages,
+            tools=converted_tools,
+            model_settings=model_settings,
+            stream=stream,
+        )
 
         ret = await litellm.acompletion(
             model=self.model,
@@ -1017,6 +1012,60 @@ class LitellmModel(Model):
 
     def _merge_headers(self, model_settings: ModelSettings):
         return {**HEADERS, **(model_settings.extra_headers or {}), **(HEADERS_OVERRIDE.get() or {})}
+
+    def _log_request_to_file(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model_settings: ModelSettings,
+        stream: bool,
+    ) -> None:
+        """
+        Log the request messages and tools to a file in the log folder.
+
+        Args:
+            messages: The messages being sent to the model
+            tools: The tools being provided to the model
+            model_settings: The model settings being used
+            stream: Whether streaming is enabled
+        """
+        try:
+            # Create logs directory if it doesn't exist
+            log_dir = Path("logs")
+            log_dir.mkdir(exist_ok=True)
+
+            # Create a timestamp-based filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            log_file = log_dir / f"litellm_request_{timestamp}.json"
+
+            # Prepare log data
+            log_data = {
+                "timestamp": datetime.now().isoformat(),
+                "model": self.model,
+                "base_url": self.base_url,
+                "stream": stream,
+                "model_settings": {
+                    "temperature": model_settings.temperature,
+                    "top_p": model_settings.top_p,
+                    "max_tokens": model_settings.max_tokens,
+                    "frequency_penalty": model_settings.frequency_penalty,
+                    "presence_penalty": model_settings.presence_penalty,
+                    "parallel_tool_calls": model_settings.parallel_tool_calls,
+                    "tool_choice": str(model_settings.tool_choice),
+                },
+                "messages": messages,
+                "tools": tools,
+            }
+
+            # Write to file
+            with open(log_file, "w", encoding="utf-8") as f:
+                json.dump(log_data, f, indent=2, ensure_ascii=False)
+
+            logger.debug(f"Request logged to {log_file}")
+
+        except Exception as e:
+            # Don't let logging errors interrupt the main flow
+            logger.warning(f"Failed to log request to file: {e}")
 
 
 class LitellmConverter:
