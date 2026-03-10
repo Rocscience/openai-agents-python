@@ -172,6 +172,46 @@ def add_cache_control_to_last_user_message(messages: list[dict[str, Any]]) -> li
     return messages
 
 
+def _apply_gemini_cache_control(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Place cache_control breakpoints for Gemini models.
+
+    Gemini supports the same cache_control: {"type": "ephemeral"} format as
+    Anthropic via LiteLLM.  Strategy:
+
+    1. Mark the system message for caching (stable prefix).
+    2. Mark the last message for caching (growing conversation edge).
+
+    Unlike Anthropic, we do NOT strip thinking blocks — Gemini uses
+    thought_signature in provider_data which doesn't affect prefix caching.
+    """
+    if not messages:
+        return messages
+
+    cache_marker = {"type": "ephemeral"}
+
+    # 1. Mark the system message (first message with role=system).
+    for msg in messages:
+        if msg.get("role") == "system":
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [
+                    {"type": "text", "text": content, "cache_control": cache_marker}
+                ]
+            elif isinstance(content, list):
+                for j in range(len(content) - 1, -1, -1):
+                    if isinstance(content[j], dict) and content[j].get("type") == "text":
+                        content[j]["cache_control"] = cache_marker
+                        break
+            break
+
+    # 2. Mark the last message for caching.
+    add_cache_control_to_last_message(messages)
+
+    return messages
+
+
 def has_thinking_block(content: list[dict[str, Any]]) -> bool:
     """Check if a content list already contains a thinking block."""
     if not isinstance(content, list):
@@ -217,15 +257,15 @@ class LitellmModel(Model):
         enable_deferred_tools: bool = False,
         anthropic_beta_headers: list[str] | None = None,
     ):
-        """Initialize LitellmModel with optional Anthropic-specific features.
+        """Initialize LitellmModel with optional provider-specific features.
 
         Args:
             model: The model identifier (e.g., "claude-3-5-sonnet-20241022", "gpt-4", etc.)
             base_url: Optional custom base URL for the API
             api_key: Optional API key for authentication
-            enable_cache_control: Enable Anthropic prompt caching. If None, auto-detects based on
-                model name (enabled for Anthropic/Claude models). Note: Prompt caching is now
-                a stable feature and does not require beta headers.
+            enable_cache_control: Enable prompt caching. If None, auto-detects based on
+                model name (enabled for Anthropic/Claude and Gemini models). Anthropic uses
+                incremental prefix caching; Gemini uses the same cache_control format via LiteLLM.
             enable_deferred_tools: Enable Anthropic deferred tool loading feature. Default False.
                 Automatically adds "advanced-tool-use-2025-11-20" to beta headers when enabled.
             anthropic_beta_headers: List of Anthropic beta feature names to enable. If None,
@@ -236,14 +276,17 @@ class LitellmModel(Model):
         self.base_url = base_url
         self.api_key = api_key
 
-        # Auto-detect Anthropic if not explicitly set.
+        # Auto-detect cache control support if not explicitly set.
+        # Both Anthropic and Gemini support cache_control in message blocks.
         self.enable_cache_control = (
-            enable_cache_control if enable_cache_control is not None else self._is_anthropic_model()
+            enable_cache_control
+            if enable_cache_control is not None
+            else (self._is_anthropic_model() or self._is_gemini_model())
         )
         self.enable_deferred_tools = enable_deferred_tools
         self.anthropic_beta_headers = anthropic_beta_headers
 
-        # Validate that advanced features are only enabled for supported models.
+        # Validate that advanced Anthropic features are only enabled for supported models.
         if self._is_anthropic_model() and (self.enable_cache_control or self.enable_deferred_tools):
             if not self._supports_anthropic_advanced_features():
                 logger.warning(
@@ -258,6 +301,10 @@ class LitellmModel(Model):
     def _is_anthropic_model(self) -> bool:
         """Detect if this is an Anthropic model based on the model name."""
         return "anthropic" in self.model.lower() or "claude" in self.model.lower()
+
+    def _is_gemini_model(self) -> bool:
+        """Detect if this is a Google Gemini model based on the model name."""
+        return "gemini" in self.model.lower()
 
     def _supports_anthropic_advanced_features(self) -> bool:
         """
@@ -782,8 +829,15 @@ class LitellmModel(Model):
                 # Join multiple beta features with commas as per Anthropic API spec.
                 extra_headers = self._merge_headers(model_settings)
                 extra_headers["anthropic-beta"] = ",".join(anthropic_beta_features)
+        elif self._is_gemini_model() and self.enable_cache_control:
+            # Gemini supports the same cache_control format as Anthropic via LiteLLM.
+            # Apply cache breakpoints (system + last message) but skip Anthropic-specific
+            # thinking block stripping — Gemini uses thought_signature in provider_data
+            # which doesn't affect prefix caching.
+            final_messages = cast(list[dict[str, Any]], converted_messages)
+            final_messages = _apply_gemini_cache_control(final_messages)
         else:
-            # Non-Anthropic models: use original messages without modifications.
+            # Other models: use original messages without modifications.
             final_messages = converted_messages
 
         # Merge headers (will already include Anthropic headers if applicable).
