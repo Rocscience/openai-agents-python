@@ -183,10 +183,31 @@ def _apply_gemini_cache_control(
     1. Mark the system message for caching (stable prefix).
     2. Mark the last message for caching (growing conversation edge).
 
+    Gemini requires a minimum of 1024 tokens for cached content.
+    If the total message content is too small, skip caching entirely.
+
     Unlike Anthropic, we do NOT strip thinking blocks — Gemini uses
     thought_signature in provider_data which doesn't affect prefix caching.
     """
     if not messages:
+        return messages
+
+    # Gemini requires minimum 1024 tokens for caching.
+    # Estimate total tokens using ~4 chars per token with a safety margin.
+    total_chars = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total_chars += len(block.get("text", ""))
+    estimated_tokens = total_chars // 4
+    if estimated_tokens < 1200:  # 1024 min + safety margin
+        logger.debug(
+            f"Gemini cache skip: ~{estimated_tokens} tokens < 1200 minimum threshold"
+        )
         return messages
 
     cache_marker = {"type": "ephemeral"}
