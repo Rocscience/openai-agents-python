@@ -212,19 +212,36 @@ def _apply_gemini_cache_control(
 
     cache_marker = {"type": "ephemeral"}
 
-    # 1. Mark the system message (first message with role=system).
+    # 1. Mark the system message (first message with role=system),
+    #    but ONLY if it's large enough to cache on its own.
+    #    Gemini requires 1024 tokens minimum per cached segment.
+    #    If the system message is below that threshold, skip it and
+    #    only cache via the last-message breakpoint.
     for msg in messages:
         if msg.get("role") == "system":
             content = msg.get("content")
+            sys_chars = 0
             if isinstance(content, str):
-                msg["content"] = [
-                    {"type": "text", "text": content, "cache_control": cache_marker}
-                ]
+                sys_chars = len(content)
             elif isinstance(content, list):
-                for j in range(len(content) - 1, -1, -1):
-                    if isinstance(content[j], dict) and content[j].get("type") == "text":
-                        content[j]["cache_control"] = cache_marker
-                        break
+                for block in content:
+                    if isinstance(block, dict):
+                        sys_chars += len(block.get("text", ""))
+            sys_tokens_est = sys_chars // 4
+            if sys_tokens_est >= 1200:  # 1024 min + safety margin
+                if isinstance(content, str):
+                    msg["content"] = [
+                        {"type": "text", "text": content, "cache_control": cache_marker}
+                    ]
+                elif isinstance(content, list):
+                    for j in range(len(content) - 1, -1, -1):
+                        if isinstance(content[j], dict) and content[j].get("type") == "text":
+                            content[j]["cache_control"] = cache_marker
+                            break
+            else:
+                logger.debug(
+                    f"Gemini cache skip system msg: ~{sys_tokens_est} tokens < 1200 minimum"
+                )
             break
 
     # 2. Mark the last message for caching.
