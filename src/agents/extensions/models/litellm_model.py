@@ -244,8 +244,29 @@ def _apply_gemini_cache_control(
                 )
             break
 
-    # 2. Mark the last message for caching.
-    add_cache_control_to_last_message(messages)
+    # 2. Mark the last message for caching, but SKIP tool result messages.
+    #    LiteLLM's Gemini context caching code splits messages at cache_control
+    #    boundaries. If we mark a tool_result message, the split separates it
+    #    from its corresponding tool_call, causing:
+    #    "Missing corresponding tool call for tool response message"
+    last_msg = messages[-1] if messages else None
+    if last_msg:
+        content = last_msg.get("content")
+        is_tool_result = False
+        if isinstance(content, list):
+            is_tool_result = any(
+                isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in content
+            )
+        # Also check for role=tool (LiteLLM converted format)
+        if last_msg.get("role") == "tool":
+            is_tool_result = True
+
+        if not is_tool_result:
+            add_cache_control_to_last_message(messages)
+        else:
+            # Find the last non-tool-result user message instead
+            add_cache_control_to_last_user_message(messages)
 
     return messages
 
